@@ -3,14 +3,14 @@ name: docker-evaluation
 services:
   docker-evaluation:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: tests/Dockerfile
     image: docker-evaluation:dev
     container_name: docker-evaluation-dev
     restart: unless-stopped
     ports:
       - "8654:8000"
     volumes:
-      - .:/app
+      - ..:/app
     env_file:
-      - .env
+      - ../.env
