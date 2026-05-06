@@ -102,8 +102,14 @@ jobs:
             echo '```.dockerignore' >> "$PAYLOAD_FILE"
             echo '```' >> "$PAYLOAD_FILE"
           fi
-
           echo "Payload successfully compiled to $PAYLOAD_FILE."
+
+          jq -n \
+            --arg payload "$(cat $PAYLOAD_FILE)" \
+            --arg repo_name "${{ github.repository }}" \
+            --arg repo_url "https://github.com/${{ github.repository }}" \
+            --arg author "${{ github.actor }}" \
+            '{payload: $payload, metadata: {repo_name: $repo_name, repo_url: $repo_url, author: $author}}' > /tmp/json_payload.json
 
       - name: POST payload to API
         id: post_api
@@ -114,8 +120,8 @@ jobs:
             -w "%{http_code}" \
             -o /tmp/api_response.json \
             -X POST \
-            -H "Content-Type: text/plain" \
-            --data-binary @/tmp/payload.txt \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/json_payload.json \
             "$CICD_API_URL")
 
           echo "HTTP Status: $HTTP_STATUS"
