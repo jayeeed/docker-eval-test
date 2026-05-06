@@ -132,8 +132,10 @@ jobs:
           if [[ "$HTTP_STATUS" -ge 200 && "$HTTP_STATUS" -lt 300 ]]; then
             STATUS=$(jq -r '.status' /tmp/api_response.json)
             SCORE=$(jq -r '.score' /tmp/api_response.json)
+            REASONING=$(jq -r '.reasoning' /tmp/api_response.json)
             echo "Evaluation Status: $STATUS"
             echo "Evaluation Score: $SCORE"
+            echo "Reasoning: $REASONING"
 
             if [ "$STATUS" = "passed" ]; then
               echo "✅ Evaluation passed with score: $SCORE"
