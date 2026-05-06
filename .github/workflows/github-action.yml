@@ -1,0 +1,148 @@
+name: Docker Evaluator
+
+on:
+  push:
+    branches:
+      - "**"
+
+jobs:
+  send-docker-config:
+    name: Collect & Send Docker Config
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Pre-flight Configuration Check
+        run: |
+          ENV_EXISTS=$(find . -maxdepth 5 -name ".env" | head -n 1)
+          if [ -n "$ENV_EXISTS" ]; then
+            echo "❌ Error: .env file is present in the repository ($ENV_EXISTS)."
+            exit 1
+          fi
+
+          GITIGNORE_EXISTS=$(find . -maxdepth 5 -name ".gitignore" | head -n 1)
+          ENV_EXAMPLE_EXISTS=$(find . -maxdepth 5 -name ".env.example" | head -n 1)
+          ENV_WILD_EXISTS=$(find . -maxdepth 5 -name ".env.*" | head -n 1)
+
+          if [ -z "$GITIGNORE_EXISTS" ] && [ -z "$ENV_EXAMPLE_EXISTS" ] && [ -z "$ENV_WILD_EXISTS" ]; then
+            echo "❌ Error: None of .gitignore, .env.example, or .env.* files were found."
+            exit 1
+          fi
+
+          echo "✅ Pre-flight checks passed."
+
+      - name: Find Docker-related files
+        id: find_files
+        run: |
+          DOCKER_FILES=$(find . -maxdepth 5 \( \
+            -name "*Dockerfile*" \
+            -o -name "*docker-compose*" \
+            -o -name ".dockerignore" \
+          \) | sort)
+
+          echo "Found Docker-related files:"
+          echo "$DOCKER_FILES"
+
+          FILE_COUNT=$(echo "$DOCKER_FILES" | grep -c . || true)
+          echo "Total files found: $FILE_COUNT"
+
+          {
+            echo "docker_files<<EOF"
+            echo "$DOCKER_FILES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "file_count=$FILE_COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Build Plain Text Payload
+        run: |
+          PAYLOAD_FILE="/tmp/payload.txt"
+          rm -f "$PAYLOAD_FILE"
+          touch "$PAYLOAD_FILE"
+
+          FOUND_IGNORE=false
+          FIRST=true
+
+          while IFS= read -r filepath; do
+            [ -z "$filepath" ] && continue
+            
+            FILENAME=$(basename "$filepath")
+            if [ "$FILENAME" = ".dockerignore" ]; then
+              FOUND_IGNORE=true
+            fi
+
+            if [ "$FIRST" = true ]; then
+              FIRST=false
+            else
+              echo "" >> "$PAYLOAD_FILE"
+              echo "--------------------------------------" >> "$PAYLOAD_FILE"
+              echo "" >> "$PAYLOAD_FILE"
+            fi
+
+            echo '```'$FILENAME >> "$PAYLOAD_FILE"
+            if [ -r "$filepath" ]; then
+              cat "$filepath" >> "$PAYLOAD_FILE"
+            fi
+            if [ -n "$(tail -c 1 "$filepath" 2>/dev/null)" ]; then
+              echo "" >> "$PAYLOAD_FILE"
+            fi
+            echo '```' >> "$PAYLOAD_FILE"
+          done <<< "${{ steps.find_files.outputs.docker_files }}"
+
+          if [ "$FOUND_IGNORE" = false ]; then
+            if [ "$FIRST" = false ]; then
+              echo "" >> "$PAYLOAD_FILE"
+              echo "--------------------------------------" >> "$PAYLOAD_FILE"
+              echo "" >> "$PAYLOAD_FILE"
+            fi
+            echo '```.dockerignore' >> "$PAYLOAD_FILE"
+            echo '```' >> "$PAYLOAD_FILE"
+          fi
+
+          echo "Payload successfully compiled to $PAYLOAD_FILE."
+
+      - name: POST payload to API
+        id: post_api
+        env:
+          CICD_API_URL: ${{ secrets.CICD_API_URL }}
+        run: |
+          HTTP_STATUS=$(curl -s \
+            -w "%{http_code}" \
+            -o /tmp/api_response.json \
+            -X POST \
+            -H "Content-Type: text/plain" \
+            --data-binary @/tmp/payload.txt \
+            "$CICD_API_URL")
+
+          echo "HTTP Status: $HTTP_STATUS"
+          echo "API Response:"
+          cat /tmp/api_response.json
+
+          echo "http_status=$HTTP_STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: Validate API response
+        run: |
+          HTTP_STATUS="${{ steps.post_api.outputs.http_status }}"
+          echo "Validating API response status: $HTTP_STATUS"
+
+          if [[ "$HTTP_STATUS" -ge 200 && "$HTTP_STATUS" -lt 300 ]]; then
+            STATUS=$(jq -r '.status' /tmp/api_response.json)
+            SCORE=$(jq -r '.score' /tmp/api_response.json)
+            echo "Evaluation Status: $STATUS"
+            echo "Evaluation Score: $SCORE"
+
+            if [ "$STATUS" = "passed" ]; then
+              echo "✅ Evaluation passed with score: $SCORE"
+            else
+              echo "❌ Evaluation failed with score: $SCORE"
+              exit 1
+            fi
+          else
+            echo "❌ API rejected the payload (HTTP $HTTP_STATUS)."
+            cat /tmp/api_response.json
+            exit 1
+          fi
